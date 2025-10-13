@@ -102,6 +102,8 @@ with tab2:
     st.subheader("Reveal Hidden Message")
 
     stego_file = st.file_uploader("Upload the stego .wav file to decode", type=["wav"], key="decode_upload")
+    decode_tech = st.selectbox("Select Decoding Technique", ["LSB", "Echo Hiding"], key="decode_tech")
+
 
     def decode_lsb(stego_bytes):
         with wave.open(io.BytesIO(stego_bytes), mode='rb') as audio:
@@ -118,12 +120,18 @@ with tab2:
                 return decoded_message[:-3]
         return "No hidden message found."
 
+
+    def decode_echo_placeholder():
+        st.info("Echo decoding is not implemented because it requires advanced signal processing (autocorrelation or cepstrum analysis) to detect embedded echo delays.")
+        st.write("In research contexts, echo decoding involves identifying delay patterns corresponding to binary 0 and 1 values by analyzing the waveform structure.")
+        return None
+
+
     if stego_file:
-        technique = st.selectbox("Select decoding technique", ["LSB"], key="decode_tech")
         if st.button("Decode Message"):
-            if technique == "LSB":
+            if decode_tech == "LSB":
                 hidden_message = decode_lsb(stego_file.read())
                 st.success("Message decoded successfully!")
                 st.code(hidden_message)
             else:
-                st.warning("Echo decoding not yet implemented.")
+                decode_echo_placeholder()
