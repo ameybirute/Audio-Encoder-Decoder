@@ -21,6 +21,9 @@ with tab1:
         [Download sample audio](https://s3.amazonaws.com/citizen-dj-assets.labs.loc.gov/audio/samplepacks/loc-fma/Ice-Cream-with-you_fma-164281_001_00-00-00.wav)
         """
     )
+    if uploaded_file:
+        st.audio(uploaded_file, format='audio/wav')
+
     message = st.text_input("Enter your secret message")
     technique = st.selectbox("Select Steganography Technique", ["LSB",])
     # technique = st.selectbox("Select Steganography Technique", ["LSB", "Echo Hiding"])
@@ -103,6 +106,8 @@ with tab1:
                     mime="audio/wav"
                 )
 
+if stego_audio:
+    st.audio(stego_audio, format='audio/wav')
 
 
 with tab2:
@@ -129,10 +134,10 @@ with tab2:
         return "No hidden message found."
 
 
-    def decode_echo_placeholder():
-        st.info("Echo decoding is not implemented because it requires advanced signal processing (autocorrelation or cepstrum analysis) to detect embedded echo delays.")
-        st.write("In research contexts, echo decoding involves identifying delay patterns corresponding to binary 0 and 1 values by analyzing the waveform structure.")
-        return None
+    # def decode_echo_placeholder():
+    #     st.info("Echo decoding is not implemented because it requires advanced signal processing (autocorrelation or cepstrum analysis) to detect embedded echo delays.")
+    #     st.write("In research contexts, echo decoding involves identifying delay patterns corresponding to binary 0 and 1 values by analyzing the waveform structure.")
+    #     return None
 
 
     if stego_file:
@@ -141,5 +146,8 @@ with tab2:
                 hidden_message = decode_lsb(stego_file.read())
                 st.success("Message decoded successfully!")
                 st.code(hidden_message)
-            else:
-                decode_echo_placeholder()
+            # else:
+            #     decode_echo_placeholder()
+
+    if stego_file:
+        st.audio(stego_file, format='audio/wav')
