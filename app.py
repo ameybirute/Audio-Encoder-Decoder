@@ -21,8 +21,10 @@ with tab1:
         [Download sample audio](https://s3.amazonaws.com/citizen-dj-assets.labs.loc.gov/audio/samplepacks/loc-fma/Ice-Cream-with-you_fma-164281_001_00-00-00.wav)
         """
     )
-    if uploaded_file:
-        st.audio(uploaded_file, format='audio/wav')
+if uploaded_file:
+    audio_bytes = uploaded_file.read()
+    st.caption("Preview: Original Audio")
+    st.audio(audio_bytes, format='audio/wav')
 
     message = st.text_input("Enter your secret message")
     technique = st.selectbox("Select Steganography Technique", ["LSB",])
@@ -107,7 +109,8 @@ with tab1:
                 )
 
 if stego_audio:
-    st.audio(stego_audio, format='audio/wav')
+    st.caption("Preview: Stego Audio")
+    st.audio(stego_audio.getvalue(), format='audio/wav')
 
 
 with tab2:
@@ -149,5 +152,6 @@ with tab2:
             # else:
             #     decode_echo_placeholder()
 
-    if stego_file:
-        st.audio(stego_file, format='audio/wav')
+if stego_file:
+    st.caption("Preview: Uploaded Stego Audio")
+    st.audio(stego_file.read(), format='audio/wav')
