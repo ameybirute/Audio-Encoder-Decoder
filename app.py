@@ -23,8 +23,7 @@ with tab1:
     )
 
     message = st.text_input("Enter your secret message")
-    technique = st.selectbox("Select Steganography Technique", ["LSB",])
-    # technique = st.selectbox("Select Steganography Technique", ["LSB", "Echo Hiding"])
+    technique = st.selectbox("Select Steganography Technique", ["LSB", "Echo Hiding"])
 
     
     def encode_lsb(audio_bytes, message):
@@ -50,50 +49,50 @@ with tab1:
         return stego_audio
 
     
-    # def encode_echo(audio_bytes, message, delay=200, attenuation=0.6):
-    #     with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
-    #         params = audio.getparams()
-    #         framerate = audio.getframerate()
-    #         frames = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+    def encode_echo(audio_bytes, message, delay=200, attenuation=0.6):
+        with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
+            params = audio.getparams()
+            framerate = audio.getframerate()
+            frames = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
 
         
-    #     message_bits = ''.join([format(ord(c), '08b') for c in message + "###"])
+        message_bits = ''.join([format(ord(c), '08b') for c in message + "###"])
 
         
-    #     direct = np.zeros(delay + 1)
-    #     direct[0] = 1.0
-    #     echo = np.zeros(delay + 1)
-    #     echo[0] = 1.0
-    #     echo[-1] = attenuation
+        direct = np.zeros(delay + 1)
+        direct[0] = 1.0
+        echo = np.zeros(delay + 1)
+        echo[0] = 1.0
+        echo[-1] = attenuation
 
         
-    #     output = np.copy(frames)
-    #     for i, bit in enumerate(message_bits):
-    #         start = i * delay
-    #         if start + delay < len(output):
-    #             if bit == '1':
-    #                 segment = frames[start:start + delay + 1]
-    #                 output[start:start + delay + 1] = convolve(segment, echo, mode='same')[:len(segment)]
-    #             else:
-    #                 segment = frames[start:start + delay + 1]
-    #                 output[start:start + delay + 1] = convolve(segment, direct, mode='same')[:len(segment)]
+        output = np.copy(frames)
+        for i, bit in enumerate(message_bits):
+            start = i * delay
+            if start + delay < len(output):
+                if bit == '1':
+                    segment = frames[start:start + delay + 1]
+                    output[start:start + delay + 1] = convolve(segment, echo, mode='same')[:len(segment)]
+                else:
+                    segment = frames[start:start + delay + 1]
+                    output[start:start + delay + 1] = convolve(segment, direct, mode='same')[:len(segment)]
 
-        # output = np.int16(output)
+        output = np.int16(output)
 
-        # stego_audio = io.BytesIO()
-        # with wave.open(stego_audio, 'wb') as new_audio:
-        #     new_audio.setparams(params)
-        #     new_audio.writeframes(output.tobytes())
-        # stego_audio.seek(0)
-        # return stego_audio
+        stego_audio = io.BytesIO()
+        with wave.open(stego_audio, 'wb') as new_audio:
+            new_audio.setparams(params)
+            new_audio.writeframes(output.tobytes())
+        stego_audio.seek(0)
+        return stego_audio
 
     if uploaded_file and message:
         if st.button("Encode Message"):
             audio_bytes = uploaded_file.read()
             if technique == "LSB":
                 stego_audio = encode_lsb(audio_bytes, message)
-            # else:
-            #     stego_audio = encode_echo(audio_bytes, message)
+            else:
+                stego_audio = encode_echo(audio_bytes, message)
 
             if stego_audio:
                 st.success(f"Message successfully hidden using {technique} technique!")
