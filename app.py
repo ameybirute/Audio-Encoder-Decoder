@@ -15,10 +15,7 @@ def wav_bytes_to_signal(audio_bytes):
         framerate = audio.getframerate()
         frames = audio.readframes(audio.getnframes())
         signal = np.frombuffer(frames, dtype=np.int16)
-
-        # Normalize to [-1, 1]
         signal = signal.astype(np.float32) / 32768.0
-
     return signal, framerate
 
 
@@ -53,11 +50,11 @@ def calculate_stoi(original_bytes, stego_bytes):
 
 
 def encode_lsb(audio_bytes, message):
-    with wave.open(io.BytesIO(audio_bytes), mode='rb') as audio:
-        frame_bytes = bytearray(list(audio.readframes(audio.getnframes())))
+    with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
+        frame_bytes = bytearray(audio.readframes(audio.getnframes()))
 
     message += "###"
-    message_bits = ''.join([format(ord(c), '08b') for c in message])
+    message_bits = ''.join(format(ord(c), '08b') for c in message)
 
     if len(message_bits) > len(frame_bytes):
         st.error("Message too large to hide in this audio file!")
@@ -67,10 +64,10 @@ def encode_lsb(audio_bytes, message):
         frame_bytes[i] = (frame_bytes[i] & 254) | int(message_bits[i])
 
     stego_audio = io.BytesIO()
-    with wave.open(stego_audio, 'wb') as new_audio:
+    with wave.open(stego_audio, 'wb') as out:
         with wave.open(io.BytesIO(audio_bytes), 'rb') as original:
-            new_audio.setparams(original.getparams())
-            new_audio.writeframes(frame_bytes)
+            out.setparams(original.getparams())
+            out.writeframes(frame_bytes)
 
     stego_audio.seek(0)
     return stego_audio
@@ -81,7 +78,7 @@ def encode_echo(audio_bytes, message, delay=200, attenuation=0.6):
         params = audio.getparams()
         frames = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
 
-    message_bits = ''.join([format(ord(c), '08b') for c in message + "###"])
+    message_bits = ''.join(format(ord(c), '08b') for c in message + "###")
 
     direct = np.zeros(delay + 1)
     direct[0] = 1.0
@@ -104,28 +101,26 @@ def encode_echo(audio_bytes, message, delay=200, attenuation=0.6):
     output = np.int16(output)
 
     stego_audio = io.BytesIO()
-    with wave.open(stego_audio, 'wb') as new_audio:
-        new_audio.setparams(params)
-        new_audio.writeframes(output.tobytes())
+    with wave.open(stego_audio, 'wb') as out:
+        out.setparams(params)
+        out.writeframes(output.tobytes())
 
     stego_audio.seek(0)
     return stego_audio
 
 
 def decode_lsb(stego_bytes):
-    with wave.open(io.BytesIO(stego_bytes), mode='rb') as audio:
-        frame_bytes = bytearray(list(audio.readframes(audio.getnframes())))
+    with wave.open(io.BytesIO(stego_bytes), 'rb') as audio:
+        frame_bytes = bytearray(audio.readframes(audio.getnframes()))
 
-    extracted_bits = [str(frame_bytes[i] & 1) for i in range(len(frame_bytes))]
-    bits_joined = ''.join(extracted_bits)
+    bits = ''.join(str(b & 1) for b in frame_bytes)
+    chars = [bits[i:i+8] for i in range(0, len(bits), 8)]
 
-    chars = [bits_joined[i:i+8] for i in range(0, len(bits_joined), 8)]
-    decoded_message = ""
-
+    message = ""
     for c in chars:
-        decoded_message += chr(int(c, 2))
-        if decoded_message.endswith("###"):
-            return decoded_message[:-3]
+        message += chr(int(c, 2))
+        if message.endswith("###"):
+            return message[:-3]
 
     return "No hidden message found."
 
@@ -136,7 +131,7 @@ def decode_lsb(stego_bytes):
 
 st.set_page_config(page_title="Audio Steganography")
 st.title("Audio Steganography App")
-st.write("Hide and reveal secret messages inside .wav files using different techniques.")
+st.write("Hide and evaluate secret messages embedded in .wav audio files.")
 
 tab1, tab2, tab3 = st.tabs(
     ["Encode Message", "Decode Message", "Results & Evaluation"]
@@ -162,17 +157,16 @@ with tab1:
         if st.button("Encode Message"):
             audio_bytes = uploaded_file.read()
 
-            stego_audio = (
-                encode_lsb(audio_bytes, message)
-                if technique == "LSB"
-                else encode_echo(audio_bytes, message)
-            )
+            if technique == "LSB":
+                stego_audio = encode_lsb(audio_bytes, message)
+            else:
+                stego_audio = encode_echo(audio_bytes, message)
 
             if stego_audio:
                 st.session_state["original_audio"] = audio_bytes
                 st.session_state["stego_audio"] = stego_audio.getvalue()
 
-                st.success(f"Message successfully hidden using {technique} technique!")
+                st.success(f"Message hidden using {technique}.")
                 st.download_button(
                     "Download Stego Audio",
                     stego_audio,
@@ -186,19 +180,18 @@ with tab1:
 # =========================
 
 with tab2:
-    st.subheader("Reveal Hidden Message")
+    st.subheader("Reveal Hidden Message (LSB only)")
 
-    stego_file = st.file_uploader("Upload the stego .wav file to decode", type=["wav"])
+    stego_file = st.file_uploader("Upload stego .wav file", type=["wav"])
 
-    if stego_file:
-        if st.button("Decode Message"):
-            hidden_message = decode_lsb(stego_file.read())
-            st.success("Message decoded successfully!")
-            st.code(hidden_message)
+    if stego_file and st.button("Decode Message"):
+        decoded = decode_lsb(stego_file.read())
+        st.success("Decoded Message:")
+        st.code(decoded)
 
 
 # =========================
-# Results Tab
+# Results & Evaluation Tab
 # =========================
 
 with tab3:
@@ -207,28 +200,34 @@ with tab3:
     metric = st.selectbox("Select Evaluation Metric", ["SNR", "STOI"])
 
     if "original_audio" in st.session_state and "stego_audio" in st.session_state:
+        st.success("Using audio generated in this session.")
         original = st.session_state["original_audio"]
         stego = st.session_state["stego_audio"]
 
-        st.write("### Original Audio")
-        st.audio(original)
-
-        st.write("### Stego Audio")
-        st.audio(stego)
-
-        if st.button("Evaluate"):
-            if metric == "SNR":
-                snr_value = compute_snr(
-                    *wav_bytes_to_signal(original)[0:1],
-                )
-                snr_value = compute_snr(
-                    wav_bytes_to_signal(original)[0],
-                    wav_bytes_to_signal(stego)[0]
-                )
-                st.metric("SNR (dB)", f"{snr_value:.2f}")
-
-            elif metric == "STOI":
-                stoi_value = calculate_stoi(original, stego)
-                st.metric("STOI Score", f"{stoi_value:.3f}")
     else:
-        st.info("Please encode an audio message first.")
+        original_file = st.file_uploader("Upload Original Audio", type=["wav"])
+        stego_file = st.file_uploader("Upload Stego Audio", type=["wav"])
+
+        if not (original_file and stego_file):
+            st.info("Upload both audio files to evaluate.")
+            st.stop()
+
+        original = original_file.read()
+        stego = stego_file.read()
+
+    st.write("### Original Audio")
+    st.audio(original)
+
+    st.write("### Stego Audio")
+    st.audio(stego)
+
+    if st.button("Evaluate"):
+        if metric == "SNR":
+            orig_sig, _ = wav_bytes_to_signal(original)
+            stego_sig, _ = wav_bytes_to_signal(stego)
+            snr_value = compute_snr(orig_sig, stego_sig)
+            st.metric("SNR (dB)", f"{snr_value:.2f}")
+
+        elif metric == "STOI":
+            stoi_value = calculate_stoi(original, stego)
+            st.metric("STOI Score", f"{stoi_value:.3f}")
