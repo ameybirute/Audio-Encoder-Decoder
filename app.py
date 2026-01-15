@@ -2,232 +2,291 @@ import streamlit as st
 import wave
 import numpy as np
 import io
-from scipy.signal import convolve
-from pystoi.stoi import stoi
+from scipy.fftpack import fft, ifft
 
+# ======================
+# AUDIO UTILS
+# ======================
 
-# =========================
-# Helper Functions
-# =========================
-
-def wav_bytes_to_signal(audio_bytes):
-    with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
-        framerate = audio.getframerate()
-        frames = audio.readframes(audio.getnframes())
-        signal = np.frombuffer(frames, dtype=np.int16)
-        signal = signal.astype(np.float32) / 32768.0
-    return signal, framerate
-
-
-def compute_snr(original, stego):
-    min_len = min(len(original), len(stego))
-    original = original[:min_len]
-    stego = stego[:min_len]
-
-    noise = original - stego
-    signal_power = np.sum(original ** 2)
-    noise_power = np.sum(noise ** 2)
-
-    if noise_power == 0:
-        return float('inf')
-
-    return 10 * np.log10(signal_power / noise_power)
-
-
-def calculate_stoi(original_bytes, stego_bytes):
-    orig_signal, fs1 = wav_bytes_to_signal(original_bytes)
-    stego_signal, fs2 = wav_bytes_to_signal(stego_bytes)
-
-    if fs1 != fs2:
-        st.error("Sample rates do not match.")
-        return None
-
-    min_len = min(len(orig_signal), len(stego_signal))
-    orig_signal = orig_signal[:min_len]
-    stego_signal = stego_signal[:min_len]
-
-    return stoi(orig_signal, stego_signal, fs1, extended=False)
-
-
-def encode_lsb(audio_bytes, message):
-    with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
-        frame_bytes = bytearray(audio.readframes(audio.getnframes()))
-
-    message += "###"
-    message_bits = ''.join(format(ord(c), '08b') for c in message)
-
-    if len(message_bits) > len(frame_bytes):
-        st.error("Message too large to hide in this audio file!")
-        return None
-
-    for i in range(len(message_bits)):
-        frame_bytes[i] = (frame_bytes[i] & 254) | int(message_bits[i])
-
-    stego_audio = io.BytesIO()
-    with wave.open(stego_audio, 'wb') as out:
-        with wave.open(io.BytesIO(audio_bytes), 'rb') as original:
-            out.setparams(original.getparams())
-            out.writeframes(frame_bytes)
-
-    stego_audio.seek(0)
-    return stego_audio
-
-
-def encode_echo(audio_bytes, message, delay=200, attenuation=0.6):
+def read_wav_bytes(audio_bytes):
+    """Read WAV file from bytes and return samples and parameters"""
     with wave.open(io.BytesIO(audio_bytes), 'rb') as audio:
         params = audio.getparams()
-        frames = np.frombuffer(audio.readframes(audio.getnframes()), dtype=np.int16)
+        frames = audio.readframes(audio.getnframes())
+        samples = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
+    return samples, params
 
-    message_bits = ''.join(format(ord(c), '08b') for c in message + "###")
+def write_wav_bytes(samples, params):
+    """Write samples to WAV format bytes"""
+    samples = np.clip(samples, -32768, 32767)
+    samples = np.int16(samples)
+    out = io.BytesIO()
+    with wave.open(out, 'wb') as audio:
+        audio.setparams(params)
+        audio.writeframes(samples.tobytes())
+    out.seek(0)
+    return out
 
-    direct = np.zeros(delay + 1)
-    direct[0] = 1.0
+# ======================
+# LSB STEGANOGRAPHY
+# ======================
 
-    echo = np.zeros(delay + 1)
-    echo[0] = 1.0
-    echo[-1] = attenuation
+def encode_lsb(audio_bytes, message):
+    """Encode message using LSB technique"""
+    samples, params = read_wav_bytes(audio_bytes)
+    samples = samples.astype(np.int16)
 
-    output = np.copy(frames)
+    # Add delimiter
+    message += "###"
+    bits = ''.join(format(ord(c), '08b') for c in message)
 
-    for i, bit in enumerate(message_bits):
-        start = i * delay
-        if start + delay < len(output):
-            segment = frames[start:start + delay + 1]
-            kernel = echo if bit == '1' else direct
-            output[start:start + delay + 1] = convolve(
-                segment, kernel, mode='same'
-            )[:len(segment)]
+    # Work with unsigned view
+    flat = samples.view(np.uint16)
 
-    output = np.int16(output)
+    if len(bits) > len(flat):
+        return None
 
-    stego_audio = io.BytesIO()
-    with wave.open(stego_audio, 'wb') as out:
-        out.setparams(params)
-        out.writeframes(output.tobytes())
+    # Embed bits in LSB
+    for i, b in enumerate(bits):
+        flat[i] = (flat[i] & 0xFFFE) | int(b)
 
-    stego_audio.seek(0)
-    return stego_audio
-
+    return write_wav_bytes(flat.view(np.int16), params)
 
 def decode_lsb(stego_bytes):
-    with wave.open(io.BytesIO(stego_bytes), 'rb') as audio:
-        frame_bytes = bytearray(audio.readframes(audio.getnframes()))
+    """Decode message using LSB technique"""
+    samples, _ = read_wav_bytes(stego_bytes)
+    samples = samples.astype(np.int16).view(np.uint16)
 
-    bits = ''.join(str(b & 1) for b in frame_bytes)
-    chars = [bits[i:i+8] for i in range(0, len(bits), 8)]
+    # Extract LSBs
+    bits = [str(s & 1) for s in samples]
 
-    message = ""
-    for c in chars:
-        message += chr(int(c, 2))
-        if message.endswith("###"):
-            return message[:-3]
+    # Convert bits to characters
+    chars = []
+    for i in range(0, len(bits), 8):
+        byte = bits[i:i+8]
+        if len(byte) < 8:
+            break
+        char_val = int("".join(byte), 2)
+        if char_val == 0:
+            break
+        chars.append(chr(char_val))
+        if "".join(chars).endswith("###"):
+            return "".join(chars)[:-3]
 
-    return "No hidden message found."
+    return "No hidden message found"
 
+# ======================
+# ECHO HIDING (PROPER IMPLEMENTATION)
+# ======================
 
-# =========================
-# Streamlit UI
-# =========================
+def encode_echo_simple(audio_bytes, message, d0=200, d1=400, alpha=0.5):
+    """
+    Proper echo hiding: adds delayed attenuated copies
+    Requires original audio for decoding
+    """
+    samples, params = read_wav_bytes(audio_bytes)
+    
+    # Add delimiter
+    message += "###"
+    bits = ''.join(format(ord(c), '08b') for c in message)
+    
+    chunk_size = 8192
+    max_delay = max(d0, d1)
+    
+    # Check if we have enough space
+    if len(bits) * chunk_size + max_delay > len(samples):
+        return None
+    
+    out = samples.copy()
+    
+    # Encode each bit
+    for i, bit in enumerate(bits):
+        start = i * chunk_size
+        end = min(start + chunk_size, len(samples) - max_delay)
+        
+        if end <= start:
+            break
+        
+        # Select delay based on bit
+        delay = d1 if bit == '1' else d0
+        
+        # Add echo: delayed attenuated copy
+        chunk = samples[start:end]
+        echo_start = start + delay
+        echo_end = echo_start + len(chunk)
+        
+        if echo_end <= len(out):
+            out[echo_start:echo_end] += alpha * chunk
+    
+    return write_wav_bytes(out, params)
 
-st.set_page_config(page_title="Audio Steganography")
-st.title("Audio Steganography App")
-st.write("Hide and evaluate secret messages embedded in .wav audio files.")
+def decode_echo_simple(original_bytes, stego_bytes, d0=200, d1=400):
+    """
+    Decode using difference between original and stego
+    Much more reliable with original audio
+    """
+    original, _ = read_wav_bytes(original_bytes)
+    stego, _ = read_wav_bytes(stego_bytes)
+    
+    chunk_size = 8192
+    max_delay = max(d0, d1)
+    num_chunks = (min(len(original), len(stego)) - max_delay) // chunk_size
+    
+    bits = []
+    debug_info = []
+    
+    for i in range(num_chunks):
+        start = i * chunk_size
+        end = start + chunk_size
+        
+        if end + max_delay > min(len(original), len(stego)):
+            break
+        
+        # Calculate the echo (difference between stego and original)
+        echo = stego[start:end + max_delay] - original[start:end + max_delay]
+        
+        # Get the original chunk for correlation
+        orig_chunk = original[start:end]
+        
+        # Check correlation at both delays
+        echo_d0 = echo[d0:d0 + len(orig_chunk)]
+        echo_d1 = echo[d1:d1 + len(orig_chunk)]
+        
+        # Correlate with original chunk
+        corr_d0 = np.abs(np.sum(orig_chunk * echo_d0))
+        corr_d1 = np.abs(np.sum(orig_chunk * echo_d1))
+        
+        # Which delay has stronger echo?
+        bit = '1' if corr_d1 > corr_d0 else '0'
+        bits.append(bit)
+        
+        debug_info.append(f"Chunk {i}: corr_d0={corr_d0:.2f}, corr_d1={corr_d1:.2f}, bit={bit}")
+    
+    # Convert bits to message
+    chars = []
+    for i in range(0, len(bits), 8):
+        byte = bits[i:i+8]
+        if len(byte) < 8:
+            break
+        char_val = int("".join(byte), 2)
+        if char_val == 0 or char_val > 127:
+            break
+        try:
+            chars.append(chr(char_val))
+            if "".join(chars).endswith("###"):
+                return "".join(chars)[:-3], debug_info, bits
+        except:
+            continue
+    
+    return "No hidden message found", debug_info, bits
 
-tab1, tab2, tab3 = st.tabs(
-    ["Encode Message", "Decode Message", "Results & Evaluation"]
-)
+# ======================
+# STREAMLIT UI
+# ======================
 
+st.set_page_config(page_title="Audio Steganography", layout="centered")
+st.title("Audio Steganography System")
 
-# =========================
-# Encode Tab
-# =========================
+tab1, tab2 = st.tabs(["Encode", "Decode"])
+
+# ======================
+# ENCODE TAB
+# ======================
 
 with tab1:
-    st.subheader("Hide Your Secret Message")
-
-    uploaded_file = st.file_uploader("Upload a .wav file", type=["wav"])
-    st.markdown(
-        "[Download sample audio](https://s3.amazonaws.com/citizen-dj-assets.labs.loc.gov/audio/samplepacks/loc-fma/Ice-Cream-with-you_fma-164281_001_00-00-00.wav)"
+    st.subheader("Encode Secret Message")
+    
+    audio_file = st.file_uploader("Upload WAV Audio File", type=["wav"], key="enc_audio")
+    message = st.text_area("Secret Message", placeholder="Enter your secret message here...")
+    
+    technique = st.selectbox(
+        "Steganography Technique",
+        ["LSB", "Echo Hiding"],
+        key="enc_tech"
     )
+    
+    if technique == "Echo Hiding":
+        d0 = st.slider("Delay for bit 0 (samples)", 100, 500, 200, 50)
+        d1 = st.slider("Delay for bit 1 (samples)", 100, 500, 400, 50)
+        alpha = st.slider("Echo Strength", 0.3, 0.8, 0.5, 0.1)
+    
+    if audio_file and message:
+        if st.button("Encode Message", type="primary"):
+            with st.spinner("Encoding message..."):
+                audio_bytes = audio_file.read()
+                
+                try:
+                    if technique == "LSB":
+                        stego = encode_lsb(audio_bytes, message)
+                    else:  # Echo Hiding
+                        stego = encode_echo_simple(audio_bytes, message, d0, d1, alpha)
+                    
+                    if stego:
+                        st.success("Encoding successful")
+                        st.download_button(
+                            "Download Stego Audio",
+                            stego,
+                            file_name="stego_audio.wav",
+                            mime="audio/wav"
+                        )
+                        
+                        if technique == "Echo Hiding":
+                            st.warning("Keep your original audio file! You'll need it to decode the message.")
+                    else:
+                        st.error("Message is too large for this audio file")
+                except Exception as e:
+                    st.error(f"Error during encoding: {str(e)}")
 
-    message = st.text_input("Enter your secret message")
-    technique = st.selectbox("Select Steganography Technique", ["LSB", "Echo Hiding"])
-
-    if uploaded_file and message:
-        if st.button("Encode Message"):
-            audio_bytes = uploaded_file.read()
-
-            if technique == "LSB":
-                stego_audio = encode_lsb(audio_bytes, message)
-            else:
-                stego_audio = encode_echo(audio_bytes, message)
-
-            if stego_audio:
-                st.session_state["original_audio"] = audio_bytes
-                st.session_state["stego_audio"] = stego_audio.getvalue()
-
-                st.success(f"Message hidden using {technique}.")
-                st.download_button(
-                    "Download Stego Audio",
-                    stego_audio,
-                    file_name=f"stego_{technique.lower()}.wav",
-                    mime="audio/wav"
-                )
-
-
-# =========================
-# Decode Tab
-# =========================
+# ======================
+# DECODE TAB
+# ======================
 
 with tab2:
-    st.subheader("Reveal Hidden Message (LSB only)")
-
-    stego_file = st.file_uploader("Upload stego .wav file", type=["wav"])
-
-    if stego_file and st.button("Decode Message"):
-        decoded = decode_lsb(stego_file.read())
-        st.success("Decoded Message:")
-        st.code(decoded)
-
-
-# =========================
-# Results & Evaluation Tab
-# =========================
-
-with tab3:
-    st.subheader("Audio Quality Evaluation")
-
-    metric = st.selectbox("Select Evaluation Metric", ["SNR", "STOI"])
-
-    if "original_audio" in st.session_state and "stego_audio" in st.session_state:
-        st.success("Using audio generated in this session.")
-        original = st.session_state["original_audio"]
-        stego = st.session_state["stego_audio"]
-
-    else:
-        original_file = st.file_uploader("Upload Original Audio", type=["wav"])
-        stego_file = st.file_uploader("Upload Stego Audio", type=["wav"])
-
-        if not (original_file and stego_file):
-            st.info("Upload both audio files to evaluate.")
-            st.stop()
-
-        original = original_file.read()
-        stego = stego_file.read()
-
-    st.write("### Original Audio")
-    st.audio(original)
-
-    st.write("### Stego Audio")
-    st.audio(stego)
-
-    if st.button("Evaluate"):
-        if metric == "SNR":
-            orig_sig, _ = wav_bytes_to_signal(original)
-            stego_sig, _ = wav_bytes_to_signal(stego)
-            snr_value = compute_snr(orig_sig, stego_sig)
-            st.metric("SNR (dB)", f"{snr_value:.2f}")
-
-        elif metric == "STOI":
-            stoi_value = calculate_stoi(original, stego)
-            st.metric("STOI Score", f"{stoi_value:.3f}")
+    st.subheader("Decode Hidden Message")
+    
+    technique = st.selectbox(
+        "Steganography Technique",
+        ["LSB", "Echo Hiding"],
+        key="dec_tech"
+    )
+    
+    if technique == "LSB":
+        stego_file = st.file_uploader("Upload Stego Audio", type=["wav"], key="dec_lsb")
+        
+        if stego_file:
+            if st.button("Decode Message", type="primary"):
+                with st.spinner("Decoding message..."):
+                    try:
+                        result = decode_lsb(stego_file.read())
+                        st.success("Decoding complete")
+                        st.markdown("### Decoded Message:")
+                        st.code(result, language=None)
+                    except Exception as e:
+                        st.error(f"Error during decoding: {str(e)}")
+    
+    else:  # Echo Hiding
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            orig_file = st.file_uploader("Upload Original Audio", type=["wav"], key="dec_orig")
+        with col2:
+            stego_file = st.file_uploader("Upload Stego Audio", type=["wav"], key="dec_stego")
+        
+        d0_dec = st.slider("Delay for bit 0 (samples)", 100, 500, 200, 50, key="dec_d0")
+        d1_dec = st.slider("Delay for bit 1 (samples)", 100, 500, 400, 50, key="dec_d1")
+        
+        if orig_file and stego_file:
+            if st.button("Decode Message", type="primary"):
+                with st.spinner("Decoding message..."):
+                    try:
+                        result, debug_info, bits = decode_echo_simple(
+                            orig_file.read(),
+                            stego_file.read(),
+                            d0_dec,
+                            d1_dec
+                        )
+                        st.success("Decoding complete")
+                        st.markdown("### Decoded Message:")
+                        st.code(result, language=None)
+                    except Exception as e:
+                        st.error(f"Error during decoding: {str(e)}")
